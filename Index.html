@@ -1,0 +1,373 @@
+<!--
+Motu-Patlu Mega Adventure
+Single-file Phaser 3 prototype (VS Code ready)
+
+How to use:
+1. Save this file as motu-patlu-phaser3.html in a project folder.
+2. Create an "assets" folder next to it and add your sprites/sounds (see asset keys below).
+3. Run a local server (Live Server in VS Code or: python -m http.server) and open the file.
+
+Notes:
+- This is a prototype framework supporting 1050+ procedural levels across Normal/Medium/Hard.
+- Auto-rotation (portrait/landscape) supported via resize/orientation handlers.
+- Sound effect placeholders are included; replace with your own files.
+- Expand enemy types, level art, UI and polish for a production game.
+
+Asset keys to provide in /assets:
+- player_motu.png, player_patlu.png, tiles.png, coin.png, enemy.png, bg_jungle.png, bg_desert.png, bg_city.png
+- sfx_jump.wav, sfx_coin.wav, sfx_power.wav, sfx_hit.wav, bgm_theme.mp3
+--><!DOCTYPE html><html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Motu Patlu: Mega Adventure (Prototype)</title>
+  <style>
+    body { margin:0; padding:0; background:#000; }
+    #game-container { width:100vw; height:100vh; overflow:hidden; }
+    /* Hint for rotation: keep canvas centered */
+    canvas { display:block; margin:0 auto; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game-container"></div>  <script>
+  // Phaser 3 single-file game
+  const GAME_WIDTH = 900;
+  const GAME_HEIGHT = 600;
+
+  const config = {
+    type: Phaser.AUTO,
+    parent: 'game-container',
+    width: GAME_WIDTH,
+    height: GAME_HEIGHT,
+    scale: {
+      mode: Phaser.Scale.RESIZE,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+    },
+    physics: {
+      default: 'arcade',
+      arcade: { gravity: { y: 1000 }, debug: false }
+    },
+    scene: [BootScene, GameScene, UIScene]
+  };
+
+  // Scenes defined below (BootScene, GameScene, UIScene)
+
+  ///////////////////////
+  // BootScene
+  ///////////////////////
+  function BootScene() { Phaser.Scene.call(this, { key: 'BootScene' }); }
+  BootScene.prototype = Object.create(Phaser.Scene.prototype);
+  BootScene.prototype.constructor = BootScene;
+
+  BootScene.prototype.preload = function() {
+    // Replace these with your own assets in '/assets'
+    this.load.image('tiles', 'assets/tiles.png');
+    this.load.image('coin', 'assets/coin.png');
+    this.load.image('bg_jungle', 'assets/bg_jungle.png');
+    this.load.image('bg_desert', 'assets/bg_desert.png');
+    this.load.image('bg_city', 'assets/bg_city.png');
+    this.load.spritesheet('motu', 'assets/player_motu.png', { frameWidth: 64, frameHeight: 64 });
+    this.load.spritesheet('patlu', 'assets/player_patlu.png', { frameWidth: 64, frameHeight: 64 });
+    this.load.image('enemy', 'assets/enemy.png');
+
+    // Sounds
+    this.load.audio('sfx_jump', 'assets/sfx_jump.wav');
+    this.load.audio('sfx_coin', 'assets/sfx_coin.wav');
+    this.load.audio('sfx_power', 'assets/sfx_power.wav');
+    this.load.audio('sfx_hit', 'assets/sfx_hit.wav');
+    this.load.audio('bgm', 'assets/bgm_theme.mp3');
+
+    // Simple loading text
+    const txt = this.add.text(GAME_WIDTH/2, GAME_HEIGHT/2, 'Loading...', { fontSize: '24px', fill:'#fff' }).setOrigin(0.5);
+  };
+
+  BootScene.prototype.create = function() {
+    // Create basic animations
+    this.anims.create({ key: 'motu_idle', frames: this.anims.generateFrameNumbers('motu', { start: 0, end: 3 }), frameRate: 6, repeat: -1 });
+    this.anims.create({ key: 'patlu_idle', frames: this.anims.generateFrameNumbers('patlu', { start: 0, end: 3 }), frameRate: 8, repeat: -1 });
+
+    this.scene.start('GameScene', { startLevel: 1, difficulty: 'Normal' });
+  };
+
+  ///////////////////////
+  // GameScene
+  ///////////////////////
+  function GameScene() { Phaser.Scene.call(this, { key: 'GameScene' }); }
+  GameScene.prototype = Object.create(Phaser.Scene.prototype);
+  GameScene.prototype.constructor = GameScene;
+
+  GameScene.prototype.init = function(data) {
+    this.levelNumber = data.startLevel || 1;
+    this.difficulty = data.difficulty || 'Normal';
+    this.totalLevels = 1050;
+    this.levelsPerWorld = 50; // for UI/world change
+  };
+
+  GameScene.prototype.create = function() {
+    // Background music
+    this.bgm = this.sound.add('bgm', { loop: true, volume: 0.5 });
+    this.bgm.play();
+
+    // Difficulty settings
+    this.difficultySettings = {
+      'Normal': { enemySpeed: 60, enemyCount: 2, timeLimit: 0 },
+      'Medium': { enemySpeed: 90, enemyCount: 3, timeLimit: 60 },
+      'Hard': { enemySpeed: 140, enemyCount: 5, timeLimit: 40 }
+    };
+    this.settings = this.difficultySettings[this.difficulty];
+
+    // Procedural background by world
+    const worldIndex = Math.floor((this.levelNumber - 1) / this.levelsPerWorld) % 9;
+    const bgKeys = ['bg_jungle','bg_desert','bg_city','bg_jungle','bg_desert','bg_city','bg_jungle','bg_desert','bg_city'];
+    this.add.tileSprite(0, 0, GAME_WIDTH, GAME_HEIGHT, bgKeys[worldIndex]).setOrigin(0).setScrollFactor(0);
+
+    // Level manager: procedural platforms, enemies, coins
+    this.platforms = this.physics.add.staticGroup();
+    this.coins = this.physics.add.group();
+    this.enemies = this.physics.add.group();
+
+    this.generateLevel(this.levelNumber);
+
+    // Players: Motu (main) & Patlu (support AI controlled for now)
+    this.player = this.physics.add.sprite(100, 400, 'motu');
+    this.player.setCollideWorldBounds(true);
+    this.player.setSize(40, 50).setOffset(12, 10);
+    this.player.health = 3;
+    this.player.isPowered = false;
+
+    this.patlu = this.physics.add.sprite(60, 400, 'patlu');
+    this.patlu.setCollideWorldBounds(true);
+    this.patlu.setImmovable(true);
+
+    this.physics.add.collider(this.player, this.platforms);
+    this.physics.add.collider(this.patlu, this.platforms);
+    this.physics.add.overlap(this.player, this.coins, this.collectCoin, null, this);
+    this.physics.add.overlap(this.player, this.enemies, this.hitEnemy, null, this);
+
+    // Controls
+    this.cursors = this.input.keyboard.createCursorKeys();
+    this.keyZ = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.Z); // samosa power
+
+    // UI scene overlay
+    this.scene.launch('UIScene', { level: this.levelNumber, difficulty: this.difficulty });
+
+    // Auto-rotation & resize handling
+    this.scale.on('resize', this.onResize, this);
+    window.addEventListener('orientationchange', () => this.onResize());
+
+    // Difficulty-tuned obstacles scheduler
+    this.time.addEvent({ delay: 2000, callback: this.spawnEnemies, callbackScope: this, loop: true });
+  };
+
+  GameScene.prototype.generateLevel = function(levelNumber) {
+    // Basic procedural platform + coin + enemy placement
+    // Complexity scales with levelNumber and difficulty
+    const complexity = 1 + Math.floor(levelNumber / 100); // grows every 100 levels
+    const baseEnemyCount = 2 + complexity;
+    const enemyCount = Math.min(15, baseEnemyCount + Math.floor(levelNumber / 50));
+
+    // Clear existing
+    this.platforms.clear(true);
+    this.coins.clear(true);
+    this.enemies.clear(true);
+
+    // Create ground
+    this.platforms.create(GAME_WIDTH/2, GAME_HEIGHT - 16, 'tiles').setScale(20, 1).refreshBody();
+
+    // Procedural platforms
+    const platformCount = Phaser.Math.Clamp(5 + complexity * 2 + Math.floor(levelNumber/50), 6, 25);
+    for (let i = 0; i < platformCount; i++) {
+      const x = Phaser.Math.Between(100, GAME_WIDTH - 100);
+      const y = Phaser.Math.Between(120, GAME_HEIGHT - 120);
+      const p = this.platforms.create(x, y, 'tiles');
+      p.scaleX = Phaser.Math.FloatBetween(0.6, 2.5);
+      p.refreshBody();
+      // Place coins above some platforms
+      if (Phaser.Math.Between(0, 1)) {
+        const coin = this.coins.create(x, y - 40, 'coin');
+        coin.body.setAllowGravity(false);
+      }
+    }
+
+    // Place enemy seeds
+    for (let e = 0; e < enemyCount; e++) {
+      const ex = Phaser.Math.Between(200, GAME_WIDTH - 50);
+      const ey = Phaser.Math.Between(80, GAME_HEIGHT - 120);
+      const enemy = this.enemies.create(ex, ey, 'enemy');
+      enemy.setCollideWorldBounds(true);
+      enemy.setBounce(1);
+      enemy.speed = this.settings.enemySpeed + Phaser.Math.Between(0, 60);
+    }
+  };
+
+  GameScene.prototype.spawnEnemies = function() {
+    // make enemies move horizontally
+    this.enemies.children.iterate((en) => {
+      if (!en.body) return;
+      const dir = Phaser.Math.Between(0, 1) ? 1 : -1;
+      en.setVelocityX(dir * (en.speed || this.settings.enemySpeed));
+    });
+  };
+
+  GameScene.prototype.collectCoin = function(player, coin) {
+    coin.destroy();
+    this.sound.play('sfx_coin');
+    // notify UI
+    this.events.emit('coinCollected');
+  };
+
+  GameScene.prototype.hitEnemy = function(player, enemy) {
+    if (player.isPowered) {
+      enemy.destroy();
+      return;
+    }
+    // take damage
+    this.sound.play('sfx_hit');
+    player.health -= 1;
+    this.events.emit('healthChanged', player.health);
+    if (player.health <= 0) {
+      this.scene.restart({ startLevel: this.levelNumber, difficulty: this.difficulty });
+    } else {
+      // brief invulnerability
+      player.setTint(0xff0000);
+      this.time.delayedCall(800, () => player.clearTint(), null, this);
+    }
+  };
+
+  GameScene.prototype.update = function(time, delta) {
+    // Background parallax handled by tileSprite if needed
+
+    // Controls for Motu
+    if (this.cursors.left.isDown) {
+      this.player.setVelocityX(-200);
+      this.player.flipX = true;
+    } else if (this.cursors.right.isDown) {
+      this.player.setVelocityX(200);
+      this.player.flipX = false;
+    } else {
+      this.player.setVelocityX(0);
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(this.cursors.up) && this.player.body.touching.down) {
+      this.player.setVelocityY(-450);
+      this.sound.play('sfx_jump');
+    }
+
+    // Samosa Power (Z)
+    if (Phaser.Input.Keyboard.JustDown(this.keyZ)) {
+      this.activateSamosaPower();
+    }
+
+    // Simple patlu follow AI
+    this.physics.moveToObject(this.patlu, this.player, 120, 200);
+
+    // Level win condition: collect all coins
+    if (this.coins.countActive(true) === 0) {
+      this.levelNumber++;
+      if (this.levelNumber > this.totalLevels) this.levelNumber = 1; // loop
+      this.scene.restart({ startLevel: this.levelNumber, difficulty: this.difficulty });
+    }
+  };
+
+  GameScene.prototype.activateSamosaPower = function() {
+    if (this.player.isPowered) return;
+    this.player.isPowered = true;
+    this.player.setScale(1.2);
+    this.sound.play('sfx_power');
+    this.time.delayedCall(5000, () => {
+      this.player.isPowered = false;
+      this.player.setScale(1.0);
+    }, null, this);
+  };
+
+  GameScene.prototype.onResize = function(gameSize) {
+    // Keep gameplay area responsive while supporting orientation
+    const canvas = this.sys.game.canvas;
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    const ratio = GAME_WIDTH / GAME_HEIGHT;
+    let newWidth = width;
+    let newHeight = Math.round(width / ratio);
+    if (newHeight > height) {
+      newHeight = height;
+      newWidth = Math.round(height * ratio);
+    }
+    canvas.style.width = newWidth + 'px';
+    canvas.style.height = newHeight + 'px';
+    // optionally rotate the canvas depending on orientation
+    if (window.matchMedia('(orientation: portrait)').matches) {
+      // portrait adjustments
+      canvas.style.transform = 'rotate(0deg)';
+    } else {
+      // landscape adjustments
+      canvas.style.transform = 'rotate(0deg)';
+    }
+  };
+
+  ///////////////////////
+  // UIScene - overlays UI and difficulty controls
+  ///////////////////////
+  function UIScene() { Phaser.Scene.call(this, { key: 'UIScene', active: false }); }
+  UIScene.prototype = Object.create(Phaser.Scene.prototype);
+  UIScene.prototype.constructor = UIScene;
+
+  UIScene.prototype.init = function(data) {
+    this.level = data.level || 1;
+    this.difficulty = data.difficulty || 'Normal';
+  };
+
+  UIScene.prototype.create = function() {
+    this.levelText = this.add.text(16, 16, `Level: ${this.level}`, { fontSize: '20px', fill:'#fff' }).setScrollFactor(0).setDepth(10);
+    this.diffText = this.add.text(16, 44, `Difficulty: ${this.difficulty}`, { fontSize: '18px', fill:'#fff' }).setScrollFactor(0).setDepth(10);
+    this.coinText = this.add.text(16, 72, `Coins: 0`, { fontSize: '18px', fill:'#fff' }).setScrollFactor(0).setDepth(10);
+    this.healthText = this.add.text(16, 100, `Health: 3`, { fontSize: '18px', fill:'#fff' }).setScrollFactor(0).setDepth(10);
+
+    // Difficulty buttons (click to change difficulty)
+    const btnY = 140;
+    this.normalBtn = this.add.text(16, btnY, 'Normal', { fontSize:'16px', backgroundColor: '#0f0', padding: { x:6, y:4 } }).setInteractive();
+    this.mediumBtn = this.add.text(100, btnY, 'Medium', { fontSize:'16px', backgroundColor: '#ff0', padding: { x:6, y:4 } }).setInteractive();
+    this.hardBtn = this.add.text(200, btnY, 'Hard', { fontSize:'16px', backgroundColor: '#f00', padding: { x:6, y:4 } }).setInteractive();
+
+    this.normalBtn.on('pointerdown', () => this.changeDifficulty('Normal'));
+    this.mediumBtn.on('pointerdown', () => this.changeDifficulty('Medium'));
+    this.hardBtn.on('pointerdown', () => this.changeDifficulty('Hard'));
+
+    // Events from GameScene
+    const gameScene = this.scene.get('GameScene');
+    gameScene.events.on('coinCollected', () => {
+      const coins = parseInt(this.coinText.text.split(': ')[1]) + 1;
+      this.coinText.setText(`Coins: ${coins}`);
+    });
+    gameScene.events.on('healthChanged', (hp) => {
+      this.healthText.setText(`Health: ${hp}`);
+    });
+
+    // Level display updates on restart
+    this.scene.get('GameScene').events.on('wake', (sys, data) => {
+      this.levelText.setText(`Level: ${data.startLevel || 1}`);
+    });
+  };
+
+  UIScene.prototype.changeDifficulty = function(diff) {
+    // Stop and restart GameScene with new difficulty
+    this.scene.stop('GameScene');
+    this.scene.start('GameScene', { startLevel: this.level, difficulty: diff });
+    this.scene.stop();
+    this.scene.start('UIScene', { level: this.level, difficulty: diff });
+  };
+
+  // Bootstrapping scenes must be declared before config uses them
+  // To keep code tidy, attach function references
+  window.BootScene = BootScene;
+  window.GameScene = GameScene;
+  window.UIScene = UIScene;
+
+  const game = new Phaser.Game(config);
+
+  // Resize once to fit initial
+  window.addEventListener('load', () => {
+    game.scene.scenes[1].onResize();
+  });
+  </script></body>
+</html>
